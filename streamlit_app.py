@@ -87,7 +87,7 @@ class VideoTransformer(VideoTransformerBase):
         self.tts = None 
         
         # SPEED FIX: Time threshold in seconds (1/5s = 5 FPS processing rate)
-        self.time_threshold = 1 / 5 
+        self.time_threshold = 1 / 2
         self.last_run_time = time.time()
 
     def recv(self, frame):
