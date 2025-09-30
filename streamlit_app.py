@@ -15,9 +15,8 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_money_model.pt"
 LABELS_PATH = BASE_DIR / "labels.txt"
 
-# <<< ADDED: Video constraints to request higher resolution and stable frame rate >>>
+# <<< CORRECTED: This dictionary is now used directly in media_stream_constraints >>>
 # Request HD resolution (1280x720) and a maximum of 15 frames per second (FPS).
-# A lower FPS helps prevent freezing due to slow model processing.
 VIDEO_CONSTRAINTS = {
     "width": 1280,
     "height": 720,
@@ -74,16 +73,14 @@ class VideoTransformer(VideoTransformerBase):
         self.detected_class = None
         # Initialize gTTS only once per session
         self.tts = None 
-        # <<< ADDED: Optimization to skip frames if the processing is too slow >>>
         # Time threshold in seconds (e.g., 0.1s for 10 FPS processing)
-        # This allows the video to continue streaming smoothly while the model runs.
         self.time_threshold = 1 / 10 
         self.last_run_time = time.time()
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
 
-        # <<< ADDED: Frame skipping logic for smooth playback >>>
+        # Frame skipping logic for smooth playback
         current_time = time.time()
         if current_time - self.last_run_time < self.time_threshold:
             # If not enough time has passed, skip processing and return the raw frame immediately
@@ -92,7 +89,6 @@ class VideoTransformer(VideoTransformerBase):
         self.last_run_time = current_time
 
         # Perform detection
-        # The YOLO model is the primary performance bottleneck.
         results = self.model.predict(img, verbose=False, conf=0.5)
         
         # Check if any objects were detected
@@ -129,10 +125,10 @@ ctx = webrtc_streamer(
     mode=WebRtcMode.SENDRECV,
     # Pass the model and labels to the VideoTransformer
     video_transformer_factory=lambda: VideoTransformer(model, class_labels),
-    media_stream_constraints={"video": True, "audio": False},
+    # <<< CORRECTED: Passed VIDEO_CONSTRAINTS inside media_stream_constraints for "video" >>>
+    media_stream_constraints={"video": VIDEO_CONSTRAINTS, "audio": False},
     async_processing=True,
-    # <<< ADDED: Apply the video constraints here to improve quality and stability >>>
-    video_html_params={"videoConstraints": VIDEO_CONSTRAINTS}, 
+    # <<< REMOVED: The unnecessary and error-causing 'video_html_params' argument >>>
 )
 
 # 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC
