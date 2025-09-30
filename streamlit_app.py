@@ -15,16 +15,25 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_money_model.pt"
 LABELS_PATH = BASE_DIR / "labels.txt"
 
-# <<< NEW OPTIMIZATION: Downscale frame to this width before running YOLO >>>
-# This is critical for improving inference speed on CPU. 640 is a common YOLO input size.
-YOLO_INPUT_SIZE_W = 640
+# --- NEW OPTIMIZATION CONSTANTS ---
 
-# Request HD resolution (1280x720) and a maximum of 15 frames per second (FPS).
+# CRITICAL SPEED FIX: Downscale frame to this width before running YOLO
+# This dramatically speeds up inference on CPU. 640 is a common YOLO input size.
+YOLO_INPUT_SIZE_W = 640 
+
+# HIGH QUALITY FIX: Request HD resolution and stable frame rate
 VIDEO_CONSTRAINTS = {
     "width": 1280,
     "height": 720,
-    "frameRate": 15,
+    "frameRate": 15, # Requests a 15 FPS feed
 }
+
+# STABILITY FIX: STUN server configuration to prevent WebRTC connection from dropping
+RTC_CONFIGURATION = {
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+}
+
+# ----------------------------------
 
 st.set_page_config(layout="wide")
 st.title("Money Detection App")
@@ -76,8 +85,9 @@ class VideoTransformer(VideoTransformerBase):
         self.detected_class = None
         # Initialize gTTS only once per session
         self.tts = None 
-        # Time threshold in seconds (e.g., 0.1s for 10 FPS processing)
-        self.time_threshold = 1 / 10 
+        
+        # SPEED FIX: Time threshold in seconds (1/5s = 5 FPS processing rate)
+        self.time_threshold = 1 / 5 
         self.last_run_time = time.time()
 
     def recv(self, frame):
@@ -86,13 +96,14 @@ class VideoTransformer(VideoTransformerBase):
         # Get original dimensions for later upscaling of bounding box coordinates
         original_h, original_w = img.shape[:2]
 
-        # Frame skipping logic for smooth playback
+        # SPEED FIX: Frame skipping logic for smooth playback
         current_time = time.time()
         if current_time - self.last_run_time < self.time_threshold:
+            # If not enough time has passed, skip processing and return the raw frame immediately
             return img
         self.last_run_time = current_time
 
-        # <<< CRITICAL OPTIMIZATION: Downscale image for fast YOLO inference >>>
+        # CRITICAL OPTIMIZATION: Downscale image for fast YOLO inference
         scale_factor = original_w / YOLO_INPUT_SIZE_W
         processing_img = cv2.resize(img, (YOLO_INPUT_SIZE_W, int(original_h / scale_factor)))
         
@@ -111,7 +122,7 @@ class VideoTransformer(VideoTransformerBase):
             xyxy = box.xyxy[0].cpu().numpy().astype(int)
             x1_scaled, y1_scaled, x2_scaled, y2_scaled = xyxy
 
-            # <<< CRITICAL: Rescale coordinates back to the original image size for drawing >>>
+            # CRITICAL: Rescale coordinates back to the original (HD) image size for drawing
             x1 = int(x1_scaled * scale_factor)
             y1 = int(y1_scaled * scale_factor)
             x2 = int(x2_scaled * scale_factor)
@@ -138,9 +149,11 @@ ctx = webrtc_streamer(
     mode=WebRtcMode.SENDRECV,
     # Pass the model and labels to the VideoTransformer
     video_transformer_factory=lambda: VideoTransformer(model, class_labels),
-    # Passed VIDEO_CONSTRAINTS inside media_stream_constraints for "video"
+    # HIGH QUALITY FIX: Apply video constraints
     media_stream_constraints={"video": VIDEO_CONSTRAINTS, "audio": False},
     async_processing=True,
+    # STABILITY FIX: Add STUN server config
+    rtc_configuration=RTC_CONFIGURATION, 
 )
 
 # 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC
