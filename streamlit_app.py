@@ -17,20 +17,25 @@ LABELS_PATH = BASE_DIR / "labels.txt"
 
 # --- NEW OPTIMIZATION CONSTANTS ---
 
-# CRITICAL SPEED FIX: Downscale frame to this width before running YOLO
-# This dramatically speeds up inference on CPU. 640 is a common YOLO input size.
+# CRITICAL SPEED FIX: Width for YOLO inference only. Processing happens at this size.
 YOLO_INPUT_SIZE_W = 640 
 
-# HIGH QUALITY FIX: Request HD resolution and stable frame rate
+# QUALITY/STABILITY: Request a lower, more stable base resolution (VGA)
+# If 1280x720 immediately crashes, this is the most likely culprit.
 VIDEO_CONSTRAINTS = {
-    "width": 1280,
-    "height": 720,
-    "frameRate": 15, # Requests a 15 FPS feed
+    "width": 640,
+    "height": 480,
+    "frameRate": 10, # Reduces network load
 }
 
-# STABILITY FIX: STUN server configuration to prevent WebRTC connection from dropping
+# MAXIMUM STABILITY FIX: Multiple STUN servers and relay policy to prevent immediate connection drop (freezing issue)
 RTC_CONFIGURATION = {
-    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+    "iceServers": [
+        {"urls": "stun:stun.l.google.com:19302"},
+        {"urls": "stun:stun1.l.google.com:19302"},
+        {"urls": "stun:stun2.l.google.com:19302"},
+    ],
+    "iceTransportPolicy": "relay", 
 }
 
 # ----------------------------------
@@ -86,24 +91,26 @@ class VideoTransformer(VideoTransformerBase):
         # Initialize gTTS only once per session
         self.tts = None 
         
-        # SPEED FIX: Time threshold in seconds (1/5s = 5 FPS processing rate)
-        self.time_threshold = 1 / 2
+        # SPEED FIX: Time threshold in seconds (1/5s = 5 FPS detection rate)
+        self.time_threshold = 1 / 5 
         self.last_run_time = time.time()
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # Get original dimensions for later upscaling of bounding box coordinates
+        # Get original dimensions (now 640x480)
         original_h, original_w = img.shape[:2]
 
-        # SPEED FIX: Frame skipping logic for smooth playback
+        # SPEED FIX: Frame skipping logic
         current_time = time.time()
         if current_time - self.last_run_time < self.time_threshold:
-            # If not enough time has passed, skip processing and return the raw frame immediately
+            # Return the original frame immediately
             return img
         self.last_run_time = current_time
 
-        # CRITICAL OPTIMIZATION: Downscale image for fast YOLO inference
+        # CRITICAL OPTIMIZATION: Resize image for fast YOLO inference. 
+        # Since the requested size is 640, this step is technically redundant but good practice 
+        # for future changes and ensures the processing size is exactly YOLO_INPUT_SIZE_W.
         scale_factor = original_w / YOLO_INPUT_SIZE_W
         processing_img = cv2.resize(img, (YOLO_INPUT_SIZE_W, int(original_h / scale_factor)))
         
@@ -122,7 +129,8 @@ class VideoTransformer(VideoTransformerBase):
             xyxy = box.xyxy[0].cpu().numpy().astype(int)
             x1_scaled, y1_scaled, x2_scaled, y2_scaled = xyxy
 
-            # CRITICAL: Rescale coordinates back to the original (HD) image size for drawing
+            # Rescale coordinates back to the original image size (they are the same if requested 
+            # size matches YOLO_INPUT_SIZE_W, but this maintains integrity)
             x1 = int(x1_scaled * scale_factor)
             y1 = int(y1_scaled * scale_factor)
             x2 = int(x2_scaled * scale_factor)
@@ -130,7 +138,7 @@ class VideoTransformer(VideoTransformerBase):
             
             label = f"{self.detected_class}: {confidence:.1f}%"
             
-            # Draw box on the high-resolution 'img'
+            # Draw box on the 'img'
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             # Draw label background
             cv2.rectangle(img, (x1, y1 - 20), (x1 + len(label) * 10, y1), (0, 255, 0), -1)
@@ -147,25 +155,22 @@ st.subheader("Live Money Detection via Webcam")
 ctx = webrtc_streamer(
     key="money-detection-key",
     mode=WebRtcMode.SENDRECV,
-    # Pass the model and labels to the VideoTransformer
     video_transformer_factory=lambda: VideoTransformer(model, class_labels),
-    # HIGH QUALITY FIX: Apply video constraints
+    # STABILITY: Request lower resolution/FPS
     media_stream_constraints={"video": VIDEO_CONSTRAINTS, "audio": False},
     async_processing=True,
-    # STABILITY FIX: Add STUN server config
+    # MAXIMUM STABILITY FIX: Add STUN server config and relay policy
     rtc_configuration=RTC_CONFIGURATION, 
 )
 
-# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC
+# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC (Unchanged)
 if ctx.video_transformer:
     detected_class = ctx.video_transformer.detected_class
     if detected_class:
-        # Create a unique key for the audio file to prevent caching issues
         audio_key = f"tts_audio_{detected_class}"
         
         @st.cache_data(ttl=3600, show_spinner=False)
         def create_and_cache_audio(text):
-            """Generates audio bytes and caches them."""
             try:
                 tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
                 fp = io.BytesIO()
@@ -173,15 +178,12 @@ if ctx.video_transformer:
                 fp.seek(0)
                 return fp.read()
             except Exception as e:
-                # Handle gTTS errors gracefully
                 st.warning(f"Error generating audio: {e}")
                 return None
 
         audio_bytes = create_and_cache_audio(detected_class)
         
         if audio_bytes:
-            # Display the audio player
             st.audio(audio_bytes, format='audio/mp3', autoplay=True, loop=False)
             
-        # Optional: Display the last detected item for debugging
         st.info(f"Last Detected Item: **{detected_class}**")
