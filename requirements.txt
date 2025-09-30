@@ -1,1 +1,6 @@
 streamlit
+ultralytics
+# Use the headless version of OpenCV for Streamlit Cloud
+opencv-python-headless
+av
+numpy
