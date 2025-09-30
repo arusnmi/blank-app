@@ -1,8 +1,9 @@
 streamlit
 ultralytics
 opencv-python-headless
-# Added: This is the missing package that caused the ModuleNotFoundError
-streamlit-webrtc 
-# Added: Required by streamlit-webrtc for video processing
-av 
+av
 numpy
+# Added: This is the package for the new "from gtts import gTTS" import
+gtts 
+# Added: Included as it was the module missing in your original error
+streamlit-webrtc
