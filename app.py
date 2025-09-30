@@ -1,178 +1,141 @@
+import os
+from pathlib import Path
 import streamlit as st
-import numpy as np
-import cv2
-import av
-import time
-import io
 from ultralytics import YOLO
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+import cv2
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoTransformerBase
 from gtts import gTTS
-from collections import deque
+import io
+import time
+import numpy as np
 
-# --- Configuration ---
-MODEL_PATH = "best_money_model.pt"
-LABELS_PATH = "labels.txt"
+# 1. PATH FIX: Get the absolute path to the root of the deployed app
+BASE_DIR = Path(__file__).resolve().parent
 
-# --- Utility Functions ---
+MODEL_PATH = BASE_DIR / "best_money_model.pt"
+LABELS_PATH = BASE_DIR / "labels.txt"
+
+st.set_page_config(layout="wide")
+st.title("Money Detection App")
+
+# 2. LOAD RESOURCES: Use st.cache_resource to load expensive resources once
+@st.cache_resource
+def load_yolo_model(path):
+    """Load the YOLO model using the corrected absolute path."""
+    try:
+        model = YOLO(str(path))
+        return model
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
 
 @st.cache_resource
 def load_class_labels(path):
-    """Loads class labels from the provided text file."""
+    """Load class labels from the text file using the corrected absolute path."""
     labels = {}
     try:
-        # Load content of labels.txt (content fetch id: uploaded:labels.txt)
-        # Note: The provided file content is: "0 0\r\n1 1\r\n2 2\r\n..."
         with open(path, 'r') as f:
             for line in f:
-                if line.strip():
-                    # Assuming format is "index name"
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        index = int(parts[0])
-                        # The name is the rest of the line (in this case, parts[1])
-                        name = ' '.join(parts[1:])
-                        labels[index] = name
-                    else:
-                        st.warning(f"Skipping malformed line in labels.txt: {line.strip()}")
-        st.info(f"Loaded {len(labels)} class labels. (e.g., 0: '{labels.get(0)}')")
+                # The line format is confirmed to be "ID Label" (e.g., "0 0", "1 1") 
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    # Map the class ID (int) to the label (string)
+                    labels[int(parts[0])] = parts[1]
+        return labels
     except Exception as e:
-        st.error(f"Error loading labels from {path}: {e}")
-        # Default labels if loading fails
-        labels = {i: str(i) for i in range(8)}
-    
-    return labels
+        st.error(f"Error loading labels file at {path}: {e}")
+        # Return an empty dictionary if loading fails
+        return {}
 
-def text_to_audio_bytes(text):
-    """Converts text to MP3 audio bytes using gTTS."""
-    try:
-        tts = gTTS(text=text, lang='en')
-        mp3_fp = io.BytesIO()
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
-        return mp3_fp.read()
-    except Exception as e:
-        st.error(f"TTS Error: {e}")
-        return None
+# Load the model and labels using the fixed paths
+model = load_yolo_model(MODEL_PATH)
+class_labels = load_class_labels(LABELS_PATH)
 
-# --- Video Processing Class for Real-Time Inference ---
+# Check if resources loaded successfully
+if model is None or not class_labels:
+    st.error("Application setup failed. Check logs for model/labels loading errors.")
+    st.stop()
 
-class YOLOVideoProcessor(VideoProcessorBase):
-    """
-    Processes video frames using the loaded YOLO model for object detection 
-    and updates the detection state for the main thread.
-    """
-    def __init__(self, labels_map, detection_state):
-        try:
-            # Model and labels loaded from the main thread
-            self.model = st.session_state.yolo_model
-            self.labels_map = labels_map
-            # Thread-safe object to store latest detections for the main thread
-            self.detection_state = detection_state 
-            st.success("YOLO model and labels initialized.")
-        except Exception as e:
-            st.error(f"Error initializing processor: {e}")
-            self.model = None
 
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        image = frame.to_ndarray(format="bgr24")
+# 3. VIDEO TRANSFORMER CLASS
+class VideoTransformer(VideoTransformerBase):
+    def __init__(self, model, labels):
+        self.model = model
+        self.labels = labels
+        self.detected_class = None
+        # Initialize gTTS only once per session
+        self.tts = None 
 
-        if self.model:
-            # 1. Run Detection
-            results = self.model(image, verbose=False, stream=False)
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+
+        # Perform detection
+        results = self.model.predict(img, verbose=False, conf=0.5)
+        
+        # Check if any objects were detected
+        if results and results[0].boxes:
+            box = results[0].boxes[0]
+            class_id = int(box.cls.item())
             
-            # 2. Get Detected Classes and Update State
-            detected_classes = set()
-            # Iterate through all detected boxes
-            for box in results[0].boxes:
-                class_id = int(box.cls.item())
-                # Get the class name, falling back to the ID if not found
-                class_name = self.labels_map.get(class_id, str(class_id))
-                detected_classes.add(class_name)
+            # Use the corrected class_labels dictionary
+            self.detected_class = self.labels.get(class_id, f"Unknown Class {class_id}")
+            confidence = box.conf.item() * 100
 
-            # Update the thread-safe deque with the latest unique detections
-            self.detection_state.clear()
-            if detected_classes:
-                self.detection_state.extend(sorted(list(detected_classes)))
-
-            # 3. Annotate Frame
-            annotated_frame = results[0].plot()
-            return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
+            # Draw bounding box and label
+            xyxy = box.xyxy[0].cpu().numpy().astype(int)
+            x1, y1, x2, y2 = xyxy
+            
+            label = f"{self.detected_class}: {confidence:.1f}%"
+            
+            # Draw box
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # Draw label background
+            cv2.rectangle(img, (x1, y1 - 20), (x1 + len(label) * 10, y1), (0, 255, 0), -1)
+            # Draw label text
+            cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
         else:
-            return frame
+            self.detected_class = None
 
-# --- Streamlit Application ---
+        return img
 
-st.title("💸 Real-Time Money Detection with YOLOv8 & TTS")
-st.caption(f"Using model: **{MODEL_PATH}** and labels from **{LABELS_PATH}**")
-st.write("---")
+# 4. STREAMLIT UI AND WEBRTC SETUP
+st.subheader("Live Money Detection via Webcam")
 
-# 1. Load Model and Labels
-if 'yolo_model' not in st.session_state:
-    try:
-        st.session_state.yolo_model = YOLO(MODEL_PATH)
-        st.session_state.class_labels = load_class_labels(LABELS_PATH) #
-        
-        # Initialize thread-safe objects for communication and TTS cooldown
-        # Deque is used here for a simple thread-safe list of strings.
-        st.session_state.detections_queue = deque() 
-        # Cooldown prevents speaking on every single frame
-        st.session_state.last_spoken_time = 0.0
-        st.session_state.tts_cooldown_s = 3.0 
-        
-    except Exception as e:
-        st.error(f"Failed to load model or labels: {e}")
-        st.stop()
-
-# 2. Start WebRTC Streamer
-st.subheader("Live Webcam Feed (Click START to begin detection)")
-
-webrtc_ctx = webrtc_streamer(
-    key="yolo-detector",
-    video_processor_factory=lambda: YOLOVideoProcessor(
-        st.session_state.class_labels,
-        st.session_state.detections_queue
-    ),
+ctx = webrtc_streamer(
+    key="money-detection-key",
+    mode=WebRtcMode.SENDRECV,
+    # Pass the model and labels to the VideoTransformer
+    video_transformer_factory=lambda: VideoTransformer(model, class_labels),
     media_stream_constraints={"video": True, "audio": False},
     async_processing=True,
 )
 
-# 3. Main Thread Loop for TTS (runs constantly while the stream is active)
-if webrtc_ctx.state.playing:
-    # Get the latest detected classes from the shared deque
-    detected_items = list(st.session_state.detections_queue)
-    current_time = time.time()
-    
-    # Check if anything is detected AND the TTS cooldown is over
-    if detected_items and (current_time - st.session_state.last_spoken_time > st.session_state.tts_cooldown_s):
+# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC
+if ctx.video_transformer:
+    detected_class = ctx.video_transformer.detected_class
+    if detected_class:
+        # Create a unique key for the audio file to prevent caching issues
+        audio_key = f"tts_audio_{detected_class}"
         
-        # Construct the text to be spoken
-        text_to_speak = "Detected: " + ", ".join(detected_items)
-        
-        # Generate audio bytes
-        audio_bytes = text_to_audio_bytes(text_to_speak)
+        @st.cache_data(ttl=3600, show_spinner=False)
+        def create_and_cache_audio(text):
+            """Generates audio bytes and caches them."""
+            try:
+                tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
+                fp = io.BytesIO()
+                tts.write_to_fp(fp)
+                fp.seek(0)
+                return fp.read()
+            except Exception as e:
+                # Handle gTTS errors gracefully
+                st.warning(f"Error generating audio: {e}")
+                return None
+
+        audio_bytes = create_and_cache_audio(detected_class)
         
         if audio_bytes:
-            # Play the audio
-            st.info(f"Speaking: **{text_to_speak}**")
-            # st.audio requires a file or bytes. This is the simplest way.
-            st.audio(audio_bytes, format='audio/mp3', start_time=0)
+            # Display the audio player
+            st.audio(audio_bytes, format='audio/mp3', autoplay=True, loop=False)
             
-            # Update the last spoken time
-            st.session_state.last_spoken_time = current_time
-            
-            # Rerun the Streamlit app to trigger the st.audio player update
-            st.experimental_rerun()
-            
-    # Display detected classes in the sidebar/main area
-    if detected_items:
-        st.sidebar.markdown("### Latest Detections")
-        st.sidebar.success(f"Detected Classes: **{', '.join(detected_items)}**")
-    else:
-        st.sidebar.info("No objects detected yet.")
-        
-st.info(
-    "TTS will announce detected objects every few seconds. Autoplay may be blocked by your browser until you interact with the page."
-)
-
-
-
+        # Optional: Display the last detected item for debugging
+        st.info(f"Last Detected Item: **{detected_class}**")
