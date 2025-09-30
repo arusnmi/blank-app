@@ -1,5 +1,8 @@
 streamlit
 ultralytics
 opencv-python-headless
-av
+# Added: This is the missing package that caused the ModuleNotFoundError
+streamlit-webrtc 
+# Added: Required by streamlit-webrtc for video processing
+av 
 numpy
