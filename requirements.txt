@@ -1,9 +1,6 @@
 streamlit
 ultralytics
-opencv-python-headless
-av
-numpy
-# Added: This is the package for the new "from gtts import gTTS" import
-gtts 
-# Added: Included as it was the module missing in your original error
-streamlit-webrtc>=0.40.0 # Use this line or the latest version
+opencv-python
+streamlit-webrtc>=0.40.0
+gTTS
+av==10.0.0

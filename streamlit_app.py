@@ -15,26 +15,19 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_money_model.pt"
 LABELS_PATH = BASE_DIR / "labels.txt"
 
-# --- NEW OPTIMIZATION CONSTANTS ---
+# --- CRITICAL OPTIMIZATION CONSTANTS ---
 
 # CRITICAL SPEED FIX: Width for YOLO inference only. Processing happens at this size.
 YOLO_INPUT_SIZE_W = 640 
 
-# QUALITY/STABILITY: Request a lower, more stable base resolution (VGA)
-# If 1280x720 immediately crashes, this is the most likely culprit.
-VIDEO_CONSTRAINTS = {
-    "width": 640,
-    "height": 480,
-    "frameRate": 10, # Reduces network load
-}
-
-# MAXIMUM STABILITY FIX: Multiple STUN servers and relay policy to prevent immediate connection drop (freezing issue)
+# MAXIMUM STABILITY FIX: Multiple STUN servers and relay policy to prevent connection drops (freezing issue)
 RTC_CONFIGURATION = {
     "iceServers": [
         {"urls": "stun:stun.l.google.com:19302"},
         {"urls": "stun:stun1.l.google.com:19302"},
         {"urls": "stun:stun2.l.google.com:19302"},
     ],
+    # Forces connection via a server, which is much more reliable in cloud environments
     "iceTransportPolicy": "relay", 
 }
 
@@ -91,14 +84,13 @@ class VideoTransformer(VideoTransformerBase):
         # Initialize gTTS only once per session
         self.tts = None 
         
-        # SPEED FIX: Time threshold in seconds (1/5s = 5 FPS detection rate)
+        # SPEED FIX: Detection runs at a maximum of 5 FPS to reduce CPU load
         self.time_threshold = 1 / 5 
         self.last_run_time = time.time()
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # Get original dimensions (now 640x480)
         original_h, original_w = img.shape[:2]
 
         # SPEED FIX: Frame skipping logic
@@ -108,9 +100,7 @@ class VideoTransformer(VideoTransformerBase):
             return img
         self.last_run_time = current_time
 
-        # CRITICAL OPTIMIZATION: Resize image for fast YOLO inference. 
-        # Since the requested size is 640, this step is technically redundant but good practice 
-        # for future changes and ensures the processing size is exactly YOLO_INPUT_SIZE_W.
+        # CRITICAL OPTIMIZATION: Downscale image for fast YOLO inference.
         scale_factor = original_w / YOLO_INPUT_SIZE_W
         processing_img = cv2.resize(img, (YOLO_INPUT_SIZE_W, int(original_h / scale_factor)))
         
@@ -129,8 +119,7 @@ class VideoTransformer(VideoTransformerBase):
             xyxy = box.xyxy[0].cpu().numpy().astype(int)
             x1_scaled, y1_scaled, x2_scaled, y2_scaled = xyxy
 
-            # Rescale coordinates back to the original image size (they are the same if requested 
-            # size matches YOLO_INPUT_SIZE_W, but this maintains integrity)
+            # Rescale coordinates back to the original image size for accurate drawing
             x1 = int(x1_scaled * scale_factor)
             y1 = int(y1_scaled * scale_factor)
             x2 = int(x2_scaled * scale_factor)
@@ -156,14 +145,14 @@ ctx = webrtc_streamer(
     key="money-detection-key",
     mode=WebRtcMode.SENDRECV,
     video_transformer_factory=lambda: VideoTransformer(model, class_labels),
-    # STABILITY: Request lower resolution/FPS
-    media_stream_constraints={"video": VIDEO_CONSTRAINTS, "audio": False},
+    # SIMPLIFIED: Request video access with NO custom constraints to maximize compatibility
+    media_stream_constraints={"video": True, "audio": False},
     async_processing=True,
     # MAXIMUM STABILITY FIX: Add STUN server config and relay policy
     rtc_configuration=RTC_CONFIGURATION, 
 )
 
-# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC (Unchanged)
+# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC
 if ctx.video_transformer:
     detected_class = ctx.video_transformer.detected_class
     if detected_class:
@@ -171,6 +160,7 @@ if ctx.video_transformer:
         
         @st.cache_data(ttl=3600, show_spinner=False)
         def create_and_cache_audio(text):
+            """Generates audio bytes and caches them."""
             try:
                 tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
                 fp = io.BytesIO()
