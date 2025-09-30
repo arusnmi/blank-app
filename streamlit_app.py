@@ -15,7 +15,10 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_money_model.pt"
 LABELS_PATH = BASE_DIR / "labels.txt"
 
-# <<< CORRECTED: This dictionary is now used directly in media_stream_constraints >>>
+# <<< NEW OPTIMIZATION: Downscale frame to this width before running YOLO >>>
+# This is critical for improving inference speed on CPU. 640 is a common YOLO input size.
+YOLO_INPUT_SIZE_W = 640
+
 # Request HD resolution (1280x720) and a maximum of 15 frames per second (FPS).
 VIDEO_CONSTRAINTS = {
     "width": 1280,
@@ -79,34 +82,44 @@ class VideoTransformer(VideoTransformerBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
+        
+        # Get original dimensions for later upscaling of bounding box coordinates
+        original_h, original_w = img.shape[:2]
 
         # Frame skipping logic for smooth playback
         current_time = time.time()
         if current_time - self.last_run_time < self.time_threshold:
-            # If not enough time has passed, skip processing and return the raw frame immediately
             return img
-
         self.last_run_time = current_time
 
-        # Perform detection
-        results = self.model.predict(img, verbose=False, conf=0.5)
+        # <<< CRITICAL OPTIMIZATION: Downscale image for fast YOLO inference >>>
+        scale_factor = original_w / YOLO_INPUT_SIZE_W
+        processing_img = cv2.resize(img, (YOLO_INPUT_SIZE_W, int(original_h / scale_factor)))
+        
+        # Perform detection on the smaller image
+        results = self.model.predict(processing_img, verbose=False, conf=0.5)
         
         # Check if any objects were detected
         if results and results[0].boxes:
             box = results[0].boxes[0]
             class_id = int(box.cls.item())
             
-            # Use the corrected class_labels dictionary
             self.detected_class = self.labels.get(class_id, f"Unknown Class {class_id}")
             confidence = box.conf.item() * 100
 
             # Draw bounding box and label
             xyxy = box.xyxy[0].cpu().numpy().astype(int)
-            x1, y1, x2, y2 = xyxy
+            x1_scaled, y1_scaled, x2_scaled, y2_scaled = xyxy
+
+            # <<< CRITICAL: Rescale coordinates back to the original image size for drawing >>>
+            x1 = int(x1_scaled * scale_factor)
+            y1 = int(y1_scaled * scale_factor)
+            x2 = int(x2_scaled * scale_factor)
+            y2 = int(y2_scaled * scale_factor)
             
             label = f"{self.detected_class}: {confidence:.1f}%"
             
-            # Draw box
+            # Draw box on the high-resolution 'img'
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             # Draw label background
             cv2.rectangle(img, (x1, y1 - 20), (x1 + len(label) * 10, y1), (0, 255, 0), -1)
@@ -125,10 +138,9 @@ ctx = webrtc_streamer(
     mode=WebRtcMode.SENDRECV,
     # Pass the model and labels to the VideoTransformer
     video_transformer_factory=lambda: VideoTransformer(model, class_labels),
-    # <<< CORRECTED: Passed VIDEO_CONSTRAINTS inside media_stream_constraints for "video" >>>
+    # Passed VIDEO_CONSTRAINTS inside media_stream_constraints for "video"
     media_stream_constraints={"video": VIDEO_CONSTRAINTS, "audio": False},
     async_processing=True,
-    # <<< REMOVED: The unnecessary and error-causing 'video_html_params' argument >>>
 )
 
 # 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC
