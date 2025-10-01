@@ -3,7 +3,8 @@ from pathlib import Path
 import streamlit as st
 from ultralytics import YOLO
 import cv2
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoTransformerBase
+# Note: Use VideoProcessorBase and WebRtcMode.SENDRECV for maximum stability
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase 
 from gtts import gTTS
 import io
 import time
@@ -17,20 +18,23 @@ LABELS_PATH = BASE_DIR / "labels.txt"
 
 # --- CRITICAL OPTIMIZATION CONSTANTS ---
 
-# CRITICAL SPEED FIX: Width for YOLO inference only. Processing happens at this size.
+# CRITICAL SPEED FIX: Width for YOLO inference only (640 is a common YOLO input size).
 YOLO_INPUT_SIZE_W = 640 
 
-# MAXIMUM STABILITY FIX: Multiple STUN servers and relay policy to prevent connection drops
+# LOCAL-ONLY FIX: Minimal WebRTC configuration for stability
 RTC_CONFIGURATION = {
-    "iceServers": [
-        {"urls": "stun:stun.l.google.com:19302"},
-        {"urls": "stun:stun1.l.google.com:19302"},
-        {"urls": "stun:stun2.l.google.com:19302"},
-    ],
-    # Forces connection via a server, which is much more reliable in cloud environments
-    "iceTransportPolicy": "relay", 
+    "iceServers": [], 
+    "iceTransportPolicy": "all", 
 }
 
+# FINAL FIX: Target a lower resolution for the camera itself (e.g., 480p)
+CAMERA_CONSTRAINTS = {
+    "video": {
+        "width": 640,
+        "height": 480,
+    },
+    "audio": False
+}
 # ----------------------------------
 
 st.set_page_config(layout="wide")
@@ -54,15 +58,12 @@ def load_class_labels(path):
     try:
         with open(path, 'r') as f:
             for line in f:
-                # The line format is confirmed to be "ID Label" (e.g., "0 0", "1 1") 
                 parts = line.strip().split()
                 if len(parts) >= 2:
-                    # Map the class ID (int) to the label (string)
                     labels[int(parts[0])] = parts[1]
         return labels
     except Exception as e:
         st.error(f"Error loading labels file at {path}: {e}")
-        # Return an empty dictionary if loading fails
         return {}
 
 # Load the model and labels using the fixed paths
@@ -75,16 +76,16 @@ if model is None or not class_labels:
     st.stop()
 
 
-# 3. VIDEO TRANSFORMER CLASS
-class VideoTransformer(VideoTransformerBase):
+# 3. VIDEO PROCESSOR CLASS (Optimized for CPU and Stability)
+class VideoProcessor(VideoProcessorBase):
     def __init__(self, model, labels):
         self.model = model
         self.labels = labels
         self.detected_class = None
         self.tts = None 
         
-        # SPEED FIX: Detection runs at a maximum of 5 FPS to reduce CPU load
-        self.time_threshold = 1 / 5 
+        # FINAL FIX: Try 1.0 second delay (1 FPS). Lower resolution should allow this to stabilize.
+        self.time_threshold = 1 /2
         self.last_run_time = time.time()
 
     def recv(self, frame):
@@ -92,19 +93,23 @@ class VideoTransformer(VideoTransformerBase):
         
         original_h, original_w = img.shape[:2]
 
-        # SPEED FIX: Frame skipping logic
+        # SPEED FIX: Frame skipping logic (Active at 1 FPS)
         current_time = time.time()
         if current_time - self.last_run_time < self.time_threshold:
-            # Return the original frame immediately
             return img
         self.last_run_time = current_time
 
-        # CRITICAL OPTIMIZATION: Downscale image for fast YOLO inference.
+        # CRITICAL OPTIMIZATION 1: Downscale image for fast YOLO inference.
+        # Note: This is now less drastic since the input frame is already smaller.
         scale_factor = original_w / YOLO_INPUT_SIZE_W
         processing_img = cv2.resize(img, (YOLO_INPUT_SIZE_W, int(original_h / scale_factor)))
         
+        # CRITICAL OPTIMIZATION 2: Convert BGR to RGB 
+        processing_img_rgb = cv2.cvtColor(processing_img, cv2.COLOR_BGR2RGB)
+        
         # Perform detection on the smaller image
-        results = self.model.predict(processing_img, verbose=False, conf=0.5)
+        # TARGET CPU ('cpu') remains the most stable setting.
+        results = self.model.predict(processing_img_rgb, verbose=False, conf=0.5, device='cpu') 
         
         # Check if any objects were detected
         if results and results[0].boxes:
@@ -118,7 +123,7 @@ class VideoTransformer(VideoTransformerBase):
             xyxy = box.xyxy[0].cpu().numpy().astype(int)
             x1_scaled, y1_scaled, x2_scaled, y2_scaled = xyxy
 
-            # Rescale coordinates back to the original image size for accurate drawing
+            # CRITICAL OPTIMIZATION 3: Rescale coordinates back to the original image size for accurate drawing
             x1 = int(x1_scaled * scale_factor)
             y1 = int(y1_scaled * scale_factor)
             x2 = int(x2_scaled * scale_factor)
@@ -126,7 +131,7 @@ class VideoTransformer(VideoTransformerBase):
             
             label = f"{self.detected_class}: {confidence:.1f}%"
             
-            # Draw box on the 'img'
+            # Draw box
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             # Draw label background
             cv2.rectangle(img, (x1, y1 - 20), (x1 + len(label) * 10, y1), (0, 255, 0), -1)
@@ -135,45 +140,38 @@ class VideoTransformer(VideoTransformerBase):
         else:
             self.detected_class = None
 
-        return img
+        return img # Return the modified frame
 
 # 4. STREAMLIT UI AND WEBRTC SETUP
 st.subheader("Live Money Detection via Webcam")
 
-# Initialize session state for audio debounce
+# CRITICAL FIX 4: Initialize session state for audio debounce
 if 'last_announced_class' not in st.session_state:
     st.session_state['last_announced_class'] = None
 
+# CRITICAL FIX 6: Use SENDRECV mode for stable video display
 ctx = webrtc_streamer(
     key="money-detection-key",
-    mode=WebRtcMode.SENDRECV,
-    video_transformer_factory=lambda: VideoTransformer(model, class_labels),
-    # SIMPLIFIED: Request video access with NO custom constraints to maximize compatibility
-    media_stream_constraints={"video": True, "audio": False},
+    mode=WebRtcMode.SENDONLY, 
+    video_processor_factory=lambda: VideoProcessor(model, class_labels),
+    # FINAL FIX: Use the new, lower camera constraints
+    media_stream_constraints=CAMERA_CONSTRAINTS, 
     async_processing=True,
-    # MAXIMUM STABILITY FIX: Add STUN server config and relay policy
-    rtc_configuration=RTC_CONFIGURATION, 
+    frontend_rtc_configuration=RTC_CONFIGURATION,
 )
 
-# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC (DEBOUNCED)
-if ctx.video_transformer and ctx.video_transformer.detected_class is not None:
-    detected_class = ctx.video_transformer.detected_class
-
-    # **CRITICAL FIX**: Only proceed if the detected class is NEW.
-    # This prevents the app from rerunning endlessly and killing the stream.
+# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC (Debounced)
+if ctx.video_processor and ctx.video_processor.detected_class is not None:
+    detected_class = ctx.video_processor.detected_class
+    
+    # CRITICAL FIX: Only proceed if the detected class is NEW to prevent stream interruption.
     if detected_class != st.session_state['last_announced_class']:
         st.session_state['last_announced_class'] = detected_class
-
-        # Create a unique key for the audio file to prevent caching issues
-        audio_key = f"tts_audio_{detected_class}"
         
         @st.cache_data(ttl=3600, show_spinner=False)
         def create_and_cache_audio(text):
-            """Generates audio bytes and caches them."""
             try:
-                # Use a simple text placeholder outside the function call to avoid Streamlit detecting a function change
-                text_to_announce = f"Detected {text}"
-                tts = gTTS(text=text_to_announce, lang='en', slow=False)
+                tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
                 fp = io.BytesIO()
                 tts.write_to_fp(fp)
                 fp.seek(0)
@@ -182,16 +180,12 @@ if ctx.video_transformer and ctx.video_transformer.detected_class is not None:
                 st.warning(f"Error generating audio: {e}")
                 return None
 
-        # Generate audio only when needed
         audio_bytes = create_and_cache_audio(detected_class)
         
         if audio_bytes:
-            # Display the audio player
             st.audio(audio_bytes, format='audio/mp3', autoplay=True, loop=False)
             
-        # Optional: Display the last detected item for debugging
         st.info(f"Last Detected Item: **{detected_class}**")
 
-# Add a simple status message if the stream is running, but no NEW detection is made
-elif ctx.video_transformer:
-    st.info("Live stream running. Hold an object in view for a new announcement.")
+elif ctx.video_processor:
+    st.info("Video stream is running. Hold an object in view for detection.")
