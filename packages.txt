@@ -1,3 +1,5 @@
+build-essential
+pkg-config
 ffmpeg
 libavformat-dev
 libavcodec-dev
