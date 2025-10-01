@@ -20,7 +20,7 @@ LABELS_PATH = BASE_DIR / "labels.txt"
 # CRITICAL SPEED FIX: Width for YOLO inference only. Processing happens at this size.
 YOLO_INPUT_SIZE_W = 640 
 
-# MAXIMUM STABILITY FIX: Multiple STUN servers and relay policy to prevent connection drops (freezing issue)
+# MAXIMUM STABILITY FIX: Multiple STUN servers and relay policy to prevent connection drops
 RTC_CONFIGURATION = {
     "iceServers": [
         {"urls": "stun:stun.l.google.com:19302"},
@@ -81,7 +81,6 @@ class VideoTransformer(VideoTransformerBase):
         self.model = model
         self.labels = labels
         self.detected_class = None
-        # Initialize gTTS only once per session
         self.tts = None 
         
         # SPEED FIX: Detection runs at a maximum of 5 FPS to reduce CPU load
@@ -141,6 +140,10 @@ class VideoTransformer(VideoTransformerBase):
 # 4. STREAMLIT UI AND WEBRTC SETUP
 st.subheader("Live Money Detection via Webcam")
 
+# Initialize session state for audio debounce
+if 'last_announced_class' not in st.session_state:
+    st.session_state['last_announced_class'] = None
+
 ctx = webrtc_streamer(
     key="money-detection-key",
     mode=WebRtcMode.SENDRECV,
@@ -152,17 +155,25 @@ ctx = webrtc_streamer(
     rtc_configuration=RTC_CONFIGURATION, 
 )
 
-# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC
-if ctx.video_transformer:
+# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC (DEBOUNCED)
+if ctx.video_transformer and ctx.video_transformer.detected_class is not None:
     detected_class = ctx.video_transformer.detected_class
-    if detected_class:
+
+    # **CRITICAL FIX**: Only proceed if the detected class is NEW.
+    # This prevents the app from rerunning endlessly and killing the stream.
+    if detected_class != st.session_state['last_announced_class']:
+        st.session_state['last_announced_class'] = detected_class
+
+        # Create a unique key for the audio file to prevent caching issues
         audio_key = f"tts_audio_{detected_class}"
         
         @st.cache_data(ttl=3600, show_spinner=False)
         def create_and_cache_audio(text):
             """Generates audio bytes and caches them."""
             try:
-                tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
+                # Use a simple text placeholder outside the function call to avoid Streamlit detecting a function change
+                text_to_announce = f"Detected {text}"
+                tts = gTTS(text=text_to_announce, lang='en', slow=False)
                 fp = io.BytesIO()
                 tts.write_to_fp(fp)
                 fp.seek(0)
@@ -171,9 +182,16 @@ if ctx.video_transformer:
                 st.warning(f"Error generating audio: {e}")
                 return None
 
+        # Generate audio only when needed
         audio_bytes = create_and_cache_audio(detected_class)
         
         if audio_bytes:
+            # Display the audio player
             st.audio(audio_bytes, format='audio/mp3', autoplay=True, loop=False)
             
+        # Optional: Display the last detected item for debugging
         st.info(f"Last Detected Item: **{detected_class}**")
+
+# Add a simple status message if the stream is running, but no NEW detection is made
+elif ctx.video_transformer:
+    st.info("Live stream running. Hold an object in view for a new announcement.")
