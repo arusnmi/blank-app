@@ -1,8 +1,19 @@
 import os
 from pathlib import Path
+
+# CRITICAL FIX: Set environment variables BEFORE any OpenCV imports
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import streamlit as st
-from ultralytics import YOLO
 import cv2
+
+# CRITICAL FIX: Patch cv2.imshow for headless environment (before ultralytics import)
+cv2.imshow = lambda *args: None
+cv2.waitKey = lambda *args: None
+cv2.destroyAllWindows = lambda *args: None
+
+from ultralytics import YOLO
 # Note: Use VideoProcessorBase and WebRtcMode.SENDRECV for maximum stability
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase 
 from gtts import gTTS
@@ -85,7 +96,7 @@ class VideoProcessor(VideoProcessorBase):
         self.tts = None 
         
         # FINAL FIX: Try 1.0 second delay (1 FPS). Lower resolution should allow this to stabilize.
-        self.time_threshold = 1 /2
+        self.time_threshold = 1 / 2
         self.last_run_time = time.time()
 
     def recv(self, frame):
@@ -157,7 +168,7 @@ ctx = webrtc_streamer(
     # FINAL FIX: Use the new, lower camera constraints
     media_stream_constraints=CAMERA_CONSTRAINTS, 
     async_processing=True,
-    frontend_rtc_configuration=RTC_CONFIGURATION,
+    rtc_configuration=RTC_CONFIGURATION,
 )
 
 # 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC (Debounced)
