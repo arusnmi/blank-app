@@ -1,12 +1,11 @@
 import streamlit as st
 import cv2
 import numpy as np
-import tensorflow as tf
 from PIL import Image
 import tempfile
 import os
 import pyttsx3
-
+from ultralytics import YOLO   # ✅ keep Ultralytics
 
 def load_class_labels(label_path="labels.txt"):
     """Load class labels from file and clean them up for TTS"""
@@ -24,39 +23,13 @@ def load_class_labels(label_path="labels.txt"):
                 labels[idx] = "Background"
     return labels
 
-
 # Load labels once
 CLASS_LABELS = load_class_labels("labels.txt")
 
-
 @st.cache_resource
-def load_tflite_model(model_path="model.tflite"):
-    """Load a TensorFlow Lite model"""
-    interpreter = tf.lite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()
-    return interpreter
-
-
-def preprocess_image(image, input_size=(640, 640)):
-    """Resize and normalize image for model"""
-    img = cv2.resize(image, input_size)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = img.astype(np.float32) / 255.0
-    img = np.expand_dims(img, axis=0)
-    return img
-
-
-def run_inference(interpreter, input_data):
-    """Run inference on TFLite model"""
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-
-    interpreter.set_tensor(input_details[0]['index'], input_data)
-    interpreter.invoke()
-
-    outputs = [interpreter.get_tensor(out['index']) for out in output_details]
-    return outputs
-
+def load_model(model_path="best.pt"):
+    """Load YOLO model"""
+    return YOLO(model_path)
 
 def text_to_speech(text):
     """Speak detection result"""
@@ -66,7 +39,6 @@ def text_to_speech(text):
         engine.runAndWait()
     except Exception as e:
         st.warning(f"TTS error: {e}")
-
 
 # Streamlit UI
 st.title("💵 Money Detector for the Blind (Web/PWA)")
@@ -81,31 +53,31 @@ if uploaded_file:
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    # Convert to OpenCV format
-    img_array = np.array(image)
-    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    # Save temp file for YOLO
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        image.save(tmp.name)
+        temp_path = tmp.name
 
-    # Load model
-    interpreter = load_tflite_model("model.tflite")
-
-    # Preprocess
-    input_data = preprocess_image(img_bgr)
+    # Load YOLO model
+    model = load_model("best.pt")
 
     # Run inference
-    outputs = run_inference(interpreter, input_data)
+    results = model(temp_path)
 
-    # Post-process (simple argmax classification for now)
-    preds = outputs[0]
-    class_id = int(np.argmax(preds))
-    confidence = float(np.max(preds))
+    # Draw and display results
+    for r in results:
+        for box in r.boxes:
+            conf = float(box.conf[0])
+            cls = int(box.cls[0])
 
-    if confidence >= confidence_threshold:
-        label = CLASS_LABELS.get(class_id, "Unknown")
-        st.success(f"✅ Detected: {label} (Confidence: {confidence:.2f})")
-        text_to_speech(f"Detected {label}")
-    else:
-        st.warning("⚠️ No confident detection")
+            if conf >= confidence_threshold:
+                label = CLASS_LABELS.get(cls, "Unknown")
+                st.success(f"✅ Detected: {label} (Confidence: {conf:.2f})")
+                text_to_speech(f"Detected {label}")
 
+    # Show annotated image
+    annotated_frame = results[0].plot()
+    st.image(annotated_frame, caption="Detections", use_container_width=True)
 
 st.sidebar.write("### Supported Classes")
 for idx, name in CLASS_LABELS.items():
