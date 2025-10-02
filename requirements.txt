@@ -1,6 +1,6 @@
-streamlit
+opencv-python-headless==4.8.1.78
 ultralytics
-opencv-python
-streamlit-webrtc>=0.40.0
-gTTS
-av==10.0.0
+streamlit
+gtts
+numpy
+Pillow

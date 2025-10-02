@@ -14,12 +14,10 @@ cv2.waitKey = lambda *args: None
 cv2.destroyAllWindows = lambda *args: None
 
 from ultralytics import YOLO
-# Note: Use VideoProcessorBase and WebRtcMode.SENDRECV for maximum stability
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase 
 from gtts import gTTS
 import io
-import time
 import numpy as np
+from PIL import Image
 
 # 1. PATH FIX: Get the absolute path to the root of the deployed app
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,29 +25,8 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_money_model.pt"
 LABELS_PATH = BASE_DIR / "labels.txt"
 
-# --- CRITICAL OPTIMIZATION CONSTANTS ---
-
-# CRITICAL SPEED FIX: Width for YOLO inference only (640 is a common YOLO input size).
-YOLO_INPUT_SIZE_W = 640 
-
-# LOCAL-ONLY FIX: Minimal WebRTC configuration for stability
-RTC_CONFIGURATION = {
-    "iceServers": [], 
-    "iceTransportPolicy": "all", 
-}
-
-# FINAL FIX: Target a lower resolution for the camera itself (e.g., 480p)
-CAMERA_CONSTRAINTS = {
-    "video": {
-        "width": 640,
-        "height": 480,
-    },
-    "audio": False
-}
-# ----------------------------------
-
-st.set_page_config(layout="wide")
-st.title("Money Detection App")
+st.set_page_config(layout="wide", page_title="Money Detection App", page_icon="💵")
+st.title("💵 Money Detection App")
 
 # 2. LOAD RESOURCES: Use st.cache_resource to load expensive resources once
 @st.cache_resource
@@ -78,125 +55,224 @@ def load_class_labels(path):
         return {}
 
 # Load the model and labels using the fixed paths
-model = load_yolo_model(MODEL_PATH)
-class_labels = load_class_labels(LABELS_PATH)
+with st.spinner("Loading AI model..."):
+    model = load_yolo_model(MODEL_PATH)
+    class_labels = load_class_labels(LABELS_PATH)
 
 # Check if resources loaded successfully
 if model is None or not class_labels:
     st.error("Application setup failed. Check logs for model/labels loading errors.")
     st.stop()
 
+# Initialize session state
+if 'last_detected' not in st.session_state:
+    st.session_state['last_detected'] = None
+if 'detection_count' not in st.session_state:
+    st.session_state['detection_count'] = 0
 
-# 3. VIDEO PROCESSOR CLASS (Optimized for CPU and Stability)
-class VideoProcessor(VideoProcessorBase):
-    def __init__(self, model, labels):
-        self.model = model
-        self.labels = labels
-        self.detected_class = None
-        self.tts = None 
-        
-        # FINAL FIX: Try 1.0 second delay (1 FPS). Lower resolution should allow this to stabilize.
-        self.time_threshold = 1 / 2
-        self.last_run_time = time.time()
+# 3. TABS FOR DIFFERENT INPUT METHODS
+tab1, tab2, tab3 = st.tabs(["📸 Camera", "🖼️ Upload Image", "ℹ️ Instructions"])
 
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        
-        original_h, original_w = img.shape[:2]
+with tab1:
+    st.subheader("Take a Photo with Your Camera")
+    camera_image = st.camera_input("Capture money/currency")
+    
+    if camera_image:
+        uploaded_file = camera_image
+        input_source = "camera"
+    else:
+        uploaded_file = None
+        input_source = None
 
-        # SPEED FIX: Frame skipping logic (Active at 1 FPS)
-        current_time = time.time()
-        if current_time - self.last_run_time < self.time_threshold:
-            return img
-        self.last_run_time = current_time
+with tab2:
+    st.subheader("Upload an Image")
+    file_upload = st.file_uploader(
+        "Choose an image...", 
+        type=['jpg', 'jpeg', 'png'],
+        help="Upload an image containing money/currency"
+    )
+    
+    if file_upload and not camera_image:
+        uploaded_file = file_upload
+        input_source = "upload"
 
-        # CRITICAL OPTIMIZATION 1: Downscale image for fast YOLO inference.
-        # Note: This is now less drastic since the input frame is already smaller.
-        scale_factor = original_w / YOLO_INPUT_SIZE_W
-        processing_img = cv2.resize(img, (YOLO_INPUT_SIZE_W, int(original_h / scale_factor)))
-        
-        # CRITICAL OPTIMIZATION 2: Convert BGR to RGB 
-        processing_img_rgb = cv2.cvtColor(processing_img, cv2.COLOR_BGR2RGB)
-        
-        # Perform detection on the smaller image
-        # TARGET CPU ('cpu') remains the most stable setting.
-        results = self.model.predict(processing_img_rgb, verbose=False, conf=0.5, device='cpu') 
-        
-        # Check if any objects were detected
-        if results and results[0].boxes:
-            box = results[0].boxes[0]
+with tab3:
+    st.markdown("""
+    ### 📖 How to Use This App
+    
+    #### Method 1: Camera (Recommended for Mobile)
+    1. Go to the **Camera** tab
+    2. Click "Capture money/currency" 
+    3. Allow camera access when prompted
+    4. Point at money and take a photo
+    5. View instant detection results
+    
+    #### Method 2: Upload Image
+    1. Go to the **Upload Image** tab
+    2. Click "Browse files" to select an image
+    3. Choose a photo of money from your device
+    4. View detection results
+    
+    ### 💡 Tips for Best Results
+    - ✅ Use good lighting
+    - ✅ Ensure money is clearly visible and flat
+    - ✅ Avoid shadows or glare
+    - ✅ Keep money in focus
+    - ✅ One or more denominations can be detected
+    
+    ### 🔊 Audio Feedback
+    The app will automatically announce detected currency denominations!
+    
+    ### 🏷️ Supported Currencies
+    Check your labels.txt file for the list of supported denominations.
+    """)
+
+# 4. PROCESS AND DISPLAY RESULTS
+if uploaded_file is not None:
+    # Read and display original image
+    image = Image.open(uploaded_file)
+    img_array = np.array(image)
+    
+    # Convert RGB to BGR for OpenCV
+    if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    else:
+        img_bgr = img_array
+    
+    st.divider()
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.image(image, caption="📷 Original Image", use_container_width=True)
+    
+    # Perform detection
+    with st.spinner("🔍 Analyzing image..."):
+        results = model.predict(img_bgr, verbose=False, conf=0.5, device='cpu')
+    
+    # Process results
+    detected_items = []
+    annotated_img = img_bgr.copy()
+    
+    if results and results[0].boxes:
+        for box in results[0].boxes:
             class_id = int(box.cls.item())
-            
-            self.detected_class = self.labels.get(class_id, f"Unknown Class {class_id}")
+            detected_class = class_labels.get(class_id, f"Unknown Class {class_id}")
             confidence = box.conf.item() * 100
-
-            # Draw bounding box and label
-            xyxy = box.xyxy[0].cpu().numpy().astype(int)
-            x1_scaled, y1_scaled, x2_scaled, y2_scaled = xyxy
-
-            # CRITICAL OPTIMIZATION 3: Rescale coordinates back to the original image size for accurate drawing
-            x1 = int(x1_scaled * scale_factor)
-            y1 = int(y1_scaled * scale_factor)
-            x2 = int(x2_scaled * scale_factor)
-            y2 = int(y2_scaled * scale_factor)
             
-            label = f"{self.detected_class}: {confidence:.1f}%"
+            detected_items.append({
+                'class': detected_class,
+                'confidence': confidence
+            })
+            
+            # Draw bounding box
+            xyxy = box.xyxy[0].cpu().numpy().astype(int)
+            x1, y1, x2, y2 = xyxy
+            
+            label = f"{detected_class}: {confidence:.1f}%"
             
             # Draw box
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            # Draw label background
-            cv2.rectangle(img, (x1, y1 - 20), (x1 + len(label) * 10, y1), (0, 255, 0), -1)
-            # Draw label text
-            cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-        else:
-            self.detected_class = None
-
-        return img # Return the modified frame
-
-# 4. STREAMLIT UI AND WEBRTC SETUP
-st.subheader("Live Money Detection via Webcam")
-
-# CRITICAL FIX 4: Initialize session state for audio debounce
-if 'last_announced_class' not in st.session_state:
-    st.session_state['last_announced_class'] = None
-
-# CRITICAL FIX 6: Use SENDRECV mode for stable video display
-ctx = webrtc_streamer(
-    key="money-detection-key",
-    mode=WebRtcMode.SENDONLY, 
-    video_processor_factory=lambda: VideoProcessor(model, class_labels),
-    # FINAL FIX: Use the new, lower camera constraints
-    media_stream_constraints=CAMERA_CONSTRAINTS, 
-    async_processing=True,
-    rtc_configuration=RTC_CONFIGURATION,
-)
-
-# 5. TEXT-TO-SPEECH ANNOUNCEMENT LOGIC (Debounced)
-if ctx.video_processor and ctx.video_processor.detected_class is not None:
-    detected_class = ctx.video_processor.detected_class
-    
-    # CRITICAL FIX: Only proceed if the detected class is NEW to prevent stream interruption.
-    if detected_class != st.session_state['last_announced_class']:
-        st.session_state['last_announced_class'] = detected_class
-        
-        @st.cache_data(ttl=3600, show_spinner=False)
-        def create_and_cache_audio(text):
-            try:
-                tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
-                fp = io.BytesIO()
-                tts.write_to_fp(fp)
-                fp.seek(0)
-                return fp.read()
-            except Exception as e:
-                st.warning(f"Error generating audio: {e}")
-                return None
-
-        audio_bytes = create_and_cache_audio(detected_class)
-        
-        if audio_bytes:
-            st.audio(audio_bytes, format='audio/mp3', autoplay=True, loop=False)
+            cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 3)
             
-        st.info(f"Last Detected Item: **{detected_class}**")
+            # Draw label background
+            (text_width, text_height), baseline = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
+            )
+            cv2.rectangle(
+                annotated_img, 
+                (x1, y1 - text_height - 10), 
+                (x1 + text_width, y1), 
+                (0, 255, 0), 
+                -1
+            )
+            
+            # Draw label text
+            cv2.putText(
+                annotated_img, 
+                label, 
+                (x1, y1 - 5), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.7, 
+                (0, 0, 0), 
+                2
+            )
+    
+    # Convert back to RGB for display
+    annotated_img_rgb = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
+    
+    with col2:
+        st.image(annotated_img_rgb, caption="🎯 Detection Results", use_container_width=True)
+    
+    # Display results summary
+    st.divider()
+    
+    if detected_items:
+        st.success(f"✅ Successfully detected {len(detected_items)} item(s)!")
+        
+        # Increment detection count
+        st.session_state['detection_count'] += 1
+        
+        # Create detection summary with columns
+        cols = st.columns(min(len(detected_items), 3))
+        
+        for idx, item in enumerate(detected_items):
+            with cols[idx % 3]:
+                st.metric(
+                    label=f"💵 Detection {idx + 1}",
+                    value=item['class'],
+                    delta=f"{item['confidence']:.1f}% confidence"
+                )
+        
+        # Text-to-speech for first detection
+        first_detection = detected_items[0]['class']
+        
+        # Only announce if it's a new detection
+        if first_detection != st.session_state['last_detected']:
+            st.session_state['last_detected'] = first_detection
+            
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def create_and_cache_audio(text):
+                try:
+                    tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
+                    fp = io.BytesIO()
+                    tts.write_to_fp(fp)
+                    fp.seek(0)
+                    return fp.read()
+                except Exception as e:
+                    st.warning(f"Audio generation failed: {e}")
+                    return None
+            
+            audio_bytes = create_and_cache_audio(first_detection)
+            
+            if audio_bytes:
+                st.audio(audio_bytes, format='audio/mp3', autoplay=True)
+                st.caption("🔊 Audio announcement played")
+        
+        # Show all detections in an expander
+        with st.expander("📋 Detailed Detection Information"):
+            for idx, item in enumerate(detected_items, 1):
+                st.write(f"**{idx}.** {item['class']} - Confidence: {item['confidence']:.2f}%")
+        
+    else:
+        st.warning("⚠️ No money detected in the image")
+        st.info("💡 **Tips to improve detection:**\n- Ensure good lighting\n- Keep money flat and visible\n- Avoid shadows or reflections\n- Try a different angle")
+    
+    # Show statistics
+    if st.session_state['detection_count'] > 0:
+        st.sidebar.metric("Total Detections", st.session_state['detection_count'])
 
-elif ctx.video_processor:
-    st.info("Video stream is running. Hold an object in view for detection.")
+else:
+    # Welcome message when no image is loaded
+    st.info("👆 **Get Started:** Use the Camera tab to take a photo or Upload tab to select an image")
+    
+    # Show supported labels in sidebar
+    if class_labels:
+        with st.sidebar:
+            st.subheader("🏷️ Supported Denominations")
+            for class_id, label in sorted(class_labels.items()):
+                st.write(f"• {label}")
+
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.markdown("### About")
+st.sidebar.info("This app uses YOLO AI to detect and identify money denominations in images. Perfect for accessibility and currency verification!")
