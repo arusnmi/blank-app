@@ -187,25 +187,29 @@ if uploaded_file is not None:
                 )
         
         # Text-to-speech for first detection
-        first_detection = detected_items[0]['class']
+        # Filter out background detections and get the highest confidence non-background detection
+        non_background_detections = [item for item in detected_items if item['class'].lower() != 'background']
         
-        # Only announce if it's a new detection
-        if first_detection != st.session_state['last_detected']:
-            st.session_state['last_detected'] = first_detection
+        if non_background_detections:
+            first_detection = non_background_detections[0]['class']
             
-            try:
-                # Create audio directly without caching
-                tts = gTTS(text=f"Detected {first_detection}", lang='en', slow=False)
-                audio_fp = io.BytesIO()
-                tts.write_to_fp(audio_fp)
-                audio_fp.seek(0)
+            # Only announce if it's a new detection
+            if first_detection != st.session_state['last_detected']:
+                st.session_state['last_detected'] = first_detection
                 
-                # Play the audio
-                st.audio(audio_fp, format='audio/mp3')
-                st.caption("🔊 Audio announcement played")
-                
-            except Exception as e:
-                st.warning(f"Audio generation failed: {str(e)}")
+                try:
+                    # Create audio directly without caching
+                    tts = gTTS(text=f"Detected {first_detection}", lang='en', slow=False)
+                    audio_fp = io.BytesIO()
+                    tts.write_to_fp(audio_fp)
+                    audio_fp.seek(0)
+                    
+                    # Play the audio
+                    st.audio(audio_fp, format='audio/mp3')
+                    st.caption("🔊 Audio announcement played")
+                    
+                except Exception as e:
+                    st.warning(f"Audio generation failed: {str(e)}")
 
         # Show all detections in an expander
         with st.expander("📋 Detailed Detection Information"):
