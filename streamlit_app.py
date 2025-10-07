@@ -70,62 +70,25 @@ if 'last_detected' not in st.session_state:
 if 'detection_count' not in st.session_state:
     st.session_state['detection_count'] = 0
 
-# 3. TABS FOR DIFFERENT INPUT METHODS
-tab1, tab2, tab3 = st.tabs(["📸 Camera", "🖼️ Upload Image", "ℹ️ Instructions"])
+# Add CSS for larger camera button
+st.markdown("""
+    <style>
+        .stCamera > button {
+            transform: scale(2.0);
+            margin: 20px 0;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-with tab1:
-    st.subheader("Take a Photo with Your Camera")
-    camera_image = st.camera_input("Capture money/currency")
-    
-    if camera_image:
-        uploaded_file = camera_image
-        input_source = "camera"
-    else:
-        uploaded_file = None
-        input_source = None
+st.subheader("Take a Photo with Your Camera")
+camera_image = st.camera_input("Capture money/currency")
 
-with tab2:
-    st.subheader("Upload an Image")
-    file_upload = st.file_uploader(
-        "Choose an image...", 
-        type=['jpg', 'jpeg', 'png'],
-        help="Upload an image containing money/currency"
-    )
-    
-    if file_upload and not camera_image:
-        uploaded_file = file_upload
-        input_source = "upload"
-
-with tab3:
-    st.markdown("""
-    ### 📖 How to Use This App
-    
-    #### Method 1: Camera (Recommended for Mobile)
-    1. Go to the **Camera** tab
-    2. Click "Capture money/currency" 
-    3. Allow camera access when prompted
-    4. Point at money and take a photo
-    5. View instant detection results
-    
-    #### Method 2: Upload Image
-    1. Go to the **Upload Image** tab
-    2. Click "Browse files" to select an image
-    3. Choose a photo of money from your device
-    4. View detection results
-    
-    ### 💡 Tips for Best Results
-    - ✅ Use good lighting
-    - ✅ Ensure money is clearly visible and flat
-    - ✅ Avoid shadows or glare
-    - ✅ Keep money in focus
-    - ✅ One or more denominations can be detected
-    
-    ### 🔊 Audio Feedback
-    The app will automatically announce detected currency denominations!
-    
-    ### 🏷️ Supported Currencies
-    Check your labels.txt file for the list of supported denominations.
-    """)
+if camera_image:
+    uploaded_file = camera_image
+    input_source = "camera"
+else:
+    uploaded_file = None
+    input_source = None
 
 # 4. PROCESS AND DISPLAY RESULTS
 if uploaded_file is not None:
@@ -263,7 +226,7 @@ if uploaded_file is not None:
 
 else:
     # Welcome message when no image is loaded
-    st.info("👆 **Get Started:** Use the Camera tab to take a photo or Upload tab to select an image")
+    st.info("👆 **Get Started:** Use your camera to take a photo of money")
     
     # Show supported labels in sidebar
     if class_labels:
