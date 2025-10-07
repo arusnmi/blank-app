@@ -111,7 +111,7 @@ if uploaded_file is not None:
     
     # Perform detection
     with st.spinner("🔍 Analyzing image..."):
-        results = model.predict(img_bgr, verbose=False, conf=0.5, device='cpu')
+        results = model.predict(img_bgr, verbose=False, conf=0.75, device='cpu')
     
     # Process results
     detected_items = []
