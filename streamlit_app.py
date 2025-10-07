@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import base64
 
 # CRITICAL FIX: Set environment variables BEFORE any OpenCV imports
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
@@ -187,7 +188,6 @@ if uploaded_file is not None:
                 )
         
         # Text-to-speech for first detection
-        # Filter out background detections and get the highest confidence non-background detection
         non_background_detections = [item for item in detected_items if item['class'].lower() != 'background']
         
         if non_background_detections:
@@ -200,8 +200,17 @@ if uploaded_file is not None:
                 tts.write_to_fp(audio_fp)
                 audio_fp.seek(0)
                 
-                # Play the audio with autoplay enabled
-                st.audio(audio_fp, format='audio/mp3', start_time=0)
+                # Convert audio to base64 for HTML audio element
+                audio_bytes = audio_fp.read()
+                audio_b64 = base64.b64encode(audio_bytes).decode()
+                
+                # Create HTML audio element with autoplay
+                audio_html = f"""
+                    <audio autoplay="true">
+                        <source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3">
+                    </audio>
+                """
+                st.markdown(audio_html, unsafe_allow_html=True)
                 
             except Exception as e:
                 st.warning(f"Audio generation failed: {str(e)}")
