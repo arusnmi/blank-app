@@ -81,7 +81,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.subheader("Take a Photo with Your Camera")
-camera_image = st.camera_input("Capture money/currency")
+camera_image = st.camera_input("Capture money/currency", label_visibility="collapsed", 
+                             key="camera", facing_mode="user")
 
 if camera_image:
     uploaded_file = camera_image
@@ -193,24 +194,20 @@ if uploaded_file is not None:
         if first_detection != st.session_state['last_detected']:
             st.session_state['last_detected'] = first_detection
             
-            @st.cache_data(ttl=3600, show_spinner=False)
-            def create_and_cache_audio(text):
-                try:
-                    tts = gTTS(text=f"Detected {text}", lang='en', slow=False)
-                    fp = io.BytesIO()
-                    tts.write_to_fp(fp)
-                    fp.seek(0)
-                    return fp.read()
-                except Exception as e:
-                    st.warning(f"Audio generation failed: {e}")
-                    return None
-            
-            audio_bytes = create_and_cache_audio(first_detection)
-            
-            if audio_bytes:
-                st.audio(audio_bytes, format='audio/mp3', autoplay=True)
+            try:
+                # Create audio directly without caching
+                tts = gTTS(text=f"Detected {first_detection}", lang='en', slow=False)
+                audio_fp = io.BytesIO()
+                tts.write_to_fp(audio_fp)
+                audio_fp.seek(0)
+                
+                # Play the audio
+                st.audio(audio_fp, format='audio/mp3')
                 st.caption("🔊 Audio announcement played")
-        
+                
+            except Exception as e:
+                st.warning(f"Audio generation failed: {str(e)}")
+
         # Show all detections in an expander
         with st.expander("📋 Detailed Detection Information"):
             for idx, item in enumerate(detected_items, 1):
