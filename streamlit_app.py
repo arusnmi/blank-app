@@ -193,23 +193,18 @@ if uploaded_file is not None:
         if non_background_detections:
             first_detection = non_background_detections[0]['class']
             
-            # Only announce if it's a new detection
-            if first_detection != st.session_state['last_detected']:
-                st.session_state['last_detected'] = first_detection
+            try:
+                # Create audio directly without caching
+                tts = gTTS(text=f"Detected {first_detection}", lang='en', slow=False)
+                audio_fp = io.BytesIO()
+                tts.write_to_fp(audio_fp)
+                audio_fp.seek(0)
                 
-                try:
-                    # Create audio directly without caching
-                    tts = gTTS(text=f"Detected {first_detection}", lang='en', slow=False)
-                    audio_fp = io.BytesIO()
-                    tts.write_to_fp(audio_fp)
-                    audio_fp.seek(0)
-                    
-                    # Play the audio
-                    st.audio(audio_fp, format='audio/mp3')
-                    st.caption("🔊 Audio announcement played")
-                    
-                except Exception as e:
-                    st.warning(f"Audio generation failed: {str(e)}")
+                # Play the audio with autoplay enabled
+                st.audio(audio_fp, format='audio/mp3', start_time=0)
+                
+            except Exception as e:
+                st.warning(f"Audio generation failed: {str(e)}")
 
         # Show all detections in an expander
         with st.expander("📋 Detailed Detection Information"):
