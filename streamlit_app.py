@@ -81,8 +81,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.subheader("Take a Photo with Your Camera")
-camera_image = st.camera_input("Capture money/currency", label_visibility="collapsed", 
-                             key="camera", facing_mode="user")
+camera_image = st.camera_input("Capture money/currency", label_visibility="collapsed", key="camera")
 
 if camera_image:
     uploaded_file = camera_image
