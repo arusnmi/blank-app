@@ -4,5 +4,4 @@ streamlit
 gtts
 numpy<2.0.0
 Pillow
-base64-stream
 python-io
