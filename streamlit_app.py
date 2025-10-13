@@ -5,7 +5,7 @@ import base64
 # CRITICAL FIX: Set environment variables BEFORE any OpenCV imports
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-
+#ahhhhhhhhhhhhhhhhhhh
 import streamlit as st
 import cv2
 
